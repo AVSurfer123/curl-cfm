@@ -58,7 +58,6 @@ def parse_args():
     parser.add_argument('--encoder_tau', default=0.05, type=float)
     parser.add_argument('--num_layers', default=4, type=int)
     parser.add_argument('--num_filters', default=32, type=int)
-    parser.add_argument('--curl_latent_dim', default=128, type=int)
     # sac
     parser.add_argument('--discount', default=0.99, type=float)
     parser.add_argument('--init_temperature', default=0.1, type=float)
@@ -145,8 +144,6 @@ def make_agent(obs_shape, action_shape, args, device):
             num_filters=args.num_filters,
             log_interval=args.log_interval,
             detach_encoder=args.detach_encoder,
-            curl_latent_dim=args.curl_latent_dim
-
         )
     else:
         assert 'agent is not supported: %s' % args.agent
@@ -230,7 +227,7 @@ def main():
             L.log('eval/episode', episode, step)
             evaluate(env, agent, video, args.num_eval_episodes, L, step,args)
             if args.save_model:
-                torch.save(self, f"{model_dir}/agent_{step}.pt")
+                torch.save(agent, f"{model_dir}/agent_{step}.pt")
             if args.save_buffer:
                 replay_buffer.save(buffer_dir)
 

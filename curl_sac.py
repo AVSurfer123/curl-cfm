@@ -44,6 +44,22 @@ def weight_init(m):
         nn.init.orthogonal_(m.weight.data[:, :, mid, mid], gain)
 
 
+class MLP(nn.Module):
+    def __init__(self, input_size, output_size, hidden_sizes=[]):
+        super().__init__()
+        model = []
+        prev_h = input_size
+        for h in hidden_sizes:
+            model.append(nn.Linear(prev_h, h))
+            model.append(nn.ReLU())
+            prev_h = h
+        model.append(nn.Linear(prev_h, output_size))
+        self.model = nn.Sequential(*model)
+
+    def forward(self, x):
+        return self.model(x)
+
+
 class Actor(nn.Module):
     """MLP actor network."""
     def __init__(
@@ -187,9 +203,8 @@ class CURL(nn.Module):
     CURL
     """
 
-    def __init__(self, obs_shape, z_dim, batch_size, critic, critic_target, output_type="continuous"):
+    def __init__(self, obs_shape, z_dim, critic, critic_target, output_type="continuous"):
         super(CURL, self).__init__()
-        self.batch_size = batch_size
 
         self.encoder = critic.encoder
 
@@ -227,6 +242,37 @@ class CURL(nn.Module):
         logits = logits - torch.max(logits, 1)[0][:, None]
         return logits
 
+
+class CPCTransition(nn.Module):
+
+    def __init__(self, z_dim, action_dim, frame_stack=1, hidden_sizes=[64, 64], trans_type='linear'):
+        super().__init__()
+        self.trans_type = trans_type
+        self.z_dim = z_dim
+        self.frame_stack = frame_stack
+        if self.trans_type == 'linear':
+            self.model = nn.Linear(z_dim*frame_stack + action_dim, z_dim, bias=False)
+        elif self.trans_type == 'mlp':
+            self.model = MLP(z_dim*frame_stack + action_dim, z_dim, hidden_sizes=hidden_sizes)
+        elif trans_type == 'reparam_w_tanh':
+            self.model = MLP(z_dim*frame_stack + action_dim, frame_stack * z_dim * z_dim, hidden_sizes=hidden_sizes)
+        else:
+            raise Exception('Invalid trans_type:', trans_type)
+
+    def forward(self, z, a):
+        x = torch.cat((z, a), dim=-1)
+        out = self.model(x)
+
+        if self.trans_type == 'reparam_w':
+            Ws = out.view(x.shape[0], self.z_dim, self.z_dim)  # b x z_dim x z_dim
+            return torch.bmm(Ws, z[:, -self.z_dim:].unsqueeze(-1)).squeeze(-1) # b x z_dim
+        elif self.trans_type == 'reparam_w_tanh':
+            Ws = torch.tanh(out).view(x.shape[0], self.z_dim, self.z_dim * self.frame_stack) / math.sqrt(self.z_dim) # b x z_dim x z_dim
+            return torch.bmm(Ws, z.unsqueeze(-1)).squeeze(-1) # b x z_dim
+        else:
+            return out
+
+
 class CurlSacAgent(object):
     """CURL representation learning with SAC."""
     def __init__(
@@ -257,7 +303,6 @@ class CurlSacAgent(object):
         cpc_update_freq=1,
         log_interval=100,
         detach_encoder=False,
-        curl_latent_dim=128
     ):
         self.device = device
         self.discount = discount
@@ -268,7 +313,6 @@ class CurlSacAgent(object):
         self.cpc_update_freq = cpc_update_freq
         self.log_interval = log_interval
         self.image_size = obs_shape[-1]
-        self.curl_latent_dim = curl_latent_dim
         self.detach_encoder = detach_encoder
         self.encoder_type = encoder_type
 
@@ -311,10 +355,12 @@ class CurlSacAgent(object):
             [self.log_alpha], lr=alpha_lr, betas=(alpha_beta, 0.999)
         )
 
+        self.transition = CPCTransition(encoder_feature_dim, sum(action_shape), hidden_sizes=[64,64], trans_type='reparam_w_tanh').to(device)
+        self.transition_optimizer = torch.optim.Adam(self.transition.parameters(), lr=encoder_lr)
+
         if self.encoder_type == 'pixel':
             # create CURL encoder (the 128 batch size is probably unnecessary)
-            self.CURL = CURL(obs_shape, encoder_feature_dim,
-                        self.curl_latent_dim, self.critic,self.critic_target, output_type='continuous').to(self.device)
+            self.CURL = CURL(obs_shape, encoder_feature_dim, self.critic, self.critic_target, output_type='continuous').to(self.device)
 
             # optimizer for critic encoder for reconstruction loss
             self.encoder_optimizer = torch.optim.Adam(
@@ -324,6 +370,7 @@ class CurlSacAgent(object):
             self.cpc_optimizer = torch.optim.Adam(
                 self.CURL.parameters(), lr=encoder_lr
             )
+
         self.cross_entropy_loss = nn.CrossEntropyLoss()
 
         self.train()
@@ -415,23 +462,43 @@ class CurlSacAgent(object):
         alpha_loss.backward()
         self.log_alpha_optimizer.step()
 
-    def update_cpc(self, obs_anchor, obs_pos, cpc_kwargs, L, step):
+    def update_cpc(self, obs_anchor, obs_pos, actions, L, step):
         
-        z_a = self.CURL.encode(obs_anchor)
+        z_neg = self.CURL.encode(obs_anchor)
         z_pos = self.CURL.encode(obs_pos, ema=True)
-        
-        logits = self.CURL.compute_logits(z_a, z_pos)
-        labels = torch.arange(logits.shape[0]).long().to(self.device)
-        loss = self.cross_entropy_loss(logits, labels)
+        z_next = self.transition(z_neg, actions)
+
+        # z: (B, z_dim*frame_stack), actions: (B, action_dim)
+
+        neg_dot_products = torch.mm(z_next, z_neg.t()) # b x b
+        neg_dists = -((z_next ** 2).sum(1).unsqueeze(1) - 2* neg_dot_products + (z_neg ** 2).sum(1).unsqueeze(0))
+        idxs = np.arange(z_next.shape[0])
+        # Set to minus infinity entries when comparing z with z - will be zero when apply softmax
+        neg_dists[idxs, idxs] = float('-inf') # b x b
+
+        pos_dot_products = (z_pos * z_next).sum(dim=1) # b
+        pos_dists = -((z_pos ** 2).sum(1) - 2* pos_dot_products + (z_next ** 2).sum(1))
+        pos_dists = pos_dists.unsqueeze(1) # b x 1
+
+        dists = torch.cat((neg_dists, pos_dists), dim=1) # b x b+1
+        dists = F.log_softmax(dists, dim=1) # b x b+1
+        loss = -dists[:, -1].mean() # Get last column which is the true pos sample
+
+        # CURL
+        # logits = self.CURL.compute_logits(z_next, z_pos) 
+        # labels = torch.arange(logits.shape[0]).long().to(self.device)
+        # loss = self.cross_entropy_loss(logits, labels)
         
         self.encoder_optimizer.zero_grad()
         self.cpc_optimizer.zero_grad()
+        self.transition_optimizer.zero_grad()
         loss.backward()
 
         self.encoder_optimizer.step()
         self.cpc_optimizer.step()
+        self.transition_optimizer.step()
         if step % self.log_interval == 0:
-            L.log('train/curl_loss', loss, step)
+            L.log('train/cpc_loss', loss, step)
 
 
     def update(self, replay_buffer, L, step):
@@ -462,7 +529,7 @@ class CurlSacAgent(object):
         
         if step % self.cpc_update_freq == 0 and self.encoder_type == 'pixel':
             obs_anchor, obs_pos = cpc_kwargs["obs_anchor"], cpc_kwargs["obs_pos"]
-            self.update_cpc(obs_anchor, obs_pos,cpc_kwargs, L, step)
+            self.update_cpc(obs_anchor, obs_pos, action, L, step)
 
     def save_models(self, model_dir, step):
         torch.save(

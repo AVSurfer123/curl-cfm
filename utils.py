@@ -129,7 +129,8 @@ class ReplayBuffer(Dataset):
       
         obses = self.obses[idxs]
         next_obses = self.next_obses[idxs]
-        pos = obses.copy()
+        # pos = obses.copy() Original CURL
+        pos = next_obses.copy() # For CFM
 
         obses = random_crop(obses, self.image_size)
         next_obses = random_crop(next_obses, self.image_size)
