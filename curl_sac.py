@@ -464,7 +464,7 @@ class CurlSacAgent(object):
             obs_anchor, obs_pos = cpc_kwargs["obs_anchor"], cpc_kwargs["obs_pos"]
             self.update_cpc(obs_anchor, obs_pos,cpc_kwargs, L, step)
 
-    def save(self, model_dir, step):
+    def save_models(self, model_dir, step):
         torch.save(
             self.actor.state_dict(), '%s/actor_%s.pt' % (model_dir, step)
         )
@@ -472,16 +472,10 @@ class CurlSacAgent(object):
             self.critic.state_dict(), '%s/critic_%s.pt' % (model_dir, step)
         )
 
-    def save_curl(self, model_dir, step):
-        torch.save(
-            self.CURL.state_dict(), '%s/curl_%s.pt' % (model_dir, step)
-        )
-
-    def load(self, model_dir, step):
+    def load_models(self, model_dir, step):
         self.actor.load_state_dict(
             torch.load('%s/actor_%s.pt' % (model_dir, step))
         )
         self.critic.load_state_dict(
             torch.load('%s/critic_%s.pt' % (model_dir, step))
-        )
- 
+        )    

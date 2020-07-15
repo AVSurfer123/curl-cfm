@@ -1,4 +1,4 @@
-tmp/
+experiments/
 notebooks/
 __pycache__/
 .ipynb_checkpoints/

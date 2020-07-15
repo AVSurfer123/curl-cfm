@@ -25,10 +25,10 @@ def parse_args():
     parser.add_argument('--domain_name', default='cheetah')
     parser.add_argument('--task_name', default='run')
     parser.add_argument('--pre_transform_image_size', default=100, type=int)
-
     parser.add_argument('--image_size', default=84, type=int)
     parser.add_argument('--action_repeat', default=1, type=int)
     parser.add_argument('--frame_stack', default=3, type=int)
+
     # replay buffer
     parser.add_argument('--replay_buffer_capacity', default=100000, type=int)
     # train
@@ -65,6 +65,7 @@ def parse_args():
     parser.add_argument('--alpha_lr', default=1e-4, type=float)
     parser.add_argument('--alpha_beta', default=0.5, type=float)
     # misc
+    parser.add_argument('--gpu', default=0, type=int)
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--work_dir', default='.', type=str)
     parser.add_argument('--save_tb', default=False, action='store_true')
@@ -190,7 +191,7 @@ def main():
     with open(os.path.join(args.work_dir, 'args.json'), 'w') as f:
         json.dump(vars(args), f, sort_keys=True, indent=4)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cpu' if args.gpu == -1 else f"cuda:{args.gpu}")
 
     action_shape = env.action_space.shape
 
@@ -229,7 +230,7 @@ def main():
             L.log('eval/episode', episode, step)
             evaluate(env, agent, video, args.num_eval_episodes, L, step,args)
             if args.save_model:
-                agent.save_curl(model_dir, step)
+                torch.save(self, f"{model_dir}/agent_{step}.pt")
             if args.save_buffer:
                 replay_buffer.save(buffer_dir)
 
@@ -266,9 +267,7 @@ def main():
         next_obs, reward, done, _ = env.step(action)
 
         # allow infinit bootstrap
-        done_bool = 0 if episode_step + 1 == env._max_episode_steps else float(
-            done
-        )
+        done_bool = 0 if episode_step + 1 == env._max_episode_steps else float(done)
         episode_reward += reward
         replay_buffer.add(obs, action, reward, next_obs, done_bool)
 
