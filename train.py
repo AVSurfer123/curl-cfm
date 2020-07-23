@@ -64,6 +64,7 @@ def parse_args():
     parser.add_argument('--alpha_lr', default=1e-4, type=float)
     parser.add_argument('--alpha_beta', default=0.5, type=float)
     # misc
+    parser.add_argument('--exp_name', default="", type=str)
     parser.add_argument('--gpu', default=0, type=int)
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--work_dir', default='.', type=str)
@@ -174,9 +175,14 @@ def main():
     ts = time.gmtime() 
     ts = time.strftime("%m-%d", ts)    
     env_name = args.domain_name + '-' + args.task_name
+
     exp_name = env_name + '-' + ts + '-im' + str(args.image_size) +'-b'  \
     + str(args.batch_size) + '-s' + str(args.seed)  + '-' + args.encoder_type
-    args.work_dir = args.work_dir + '/'  + exp_name
+
+    if args.exp_name:
+        exp_name = args.exp_name
+
+    args.work_dir = args.work_dir + '/' + exp_name 
 
     utils.make_dir(args.work_dir)
     video_dir = utils.make_dir(os.path.join(args.work_dir, 'video'))
@@ -273,6 +279,5 @@ def main():
 
 
 if __name__ == '__main__':
-    torch.multiprocessing.set_start_method('spawn')
-
+    # torch.multiprocessing.set_start_method('spawn')
     main()

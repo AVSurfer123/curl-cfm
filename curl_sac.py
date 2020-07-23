@@ -466,10 +466,9 @@ class CurlSacAgent(object):
         
         z_neg = self.CURL.encode(obs_anchor)
         z_pos = self.CURL.encode(obs_pos, ema=True)
+
+        # CFM
         z_next = self.transition(z_neg, actions)
-
-        # z: (B, z_dim*frame_stack), actions: (B, action_dim)
-
         neg_dot_products = torch.mm(z_next, z_neg.t()) # b x b
         neg_dists = -((z_next ** 2).sum(1).unsqueeze(1) - 2* neg_dot_products + (z_neg ** 2).sum(1).unsqueeze(0))
         idxs = np.arange(z_next.shape[0])
@@ -484,8 +483,10 @@ class CurlSacAgent(object):
         dists = F.log_softmax(dists, dim=1) # b x b+1
         loss = -dists[:, -1].mean() # Get last column which is the true pos sample
 
+        loss += F.mse_loss(z_next, z_pos)
+
         # CURL
-        # logits = self.CURL.compute_logits(z_next, z_pos) 
+        # logits = self.CURL.compute_logits(z_neg, z_pos) 
         # labels = torch.arange(logits.shape[0]).long().to(self.device)
         # loss = self.cross_entropy_loss(logits, labels)
         
