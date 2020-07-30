@@ -483,7 +483,7 @@ class CurlSacAgent(object):
         dists = F.log_softmax(dists, dim=1) # b x b+1
         loss = -dists[:, -1].mean() # Get last column which is the true pos sample
 
-        loss += F.mse_loss(z_next, z_pos)
+        loss += F.mse_loss(z_next, z_pos) # Add L2 loss
 
         # CURL
         # logits = self.CURL.compute_logits(z_neg, z_pos) 
